@@ -1,0 +1,7 @@
+{
+  "name": "controle-financeiro",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {},
+  "packageManager": "pnpm@12.3.4"
+}
