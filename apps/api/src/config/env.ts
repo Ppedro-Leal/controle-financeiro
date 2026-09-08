@@ -10,5 +10,6 @@ const port = Number(process.env.PORT ?? 3333)
 
 export const env = {
   databaseUrl,
+  databaseDirectUrl: process.env.DATABASE_DIRECT_URL,
   port,
 }

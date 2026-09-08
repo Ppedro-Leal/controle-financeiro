@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev:web": "pnpm --filter web dev",
-    "dev:api": "pnpm --filter api dev"
+    "dev:api": "pnpm --filter api dev",
+    "migrate:api": "pnpm --filter api db:migrate"
   },
   "packageManager": "pnpm@12.3.4"
 }
