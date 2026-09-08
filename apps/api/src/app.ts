@@ -1,10 +1,15 @@
 import Fastify from 'fastify'
 
 import { pool } from './database/pool.js'
+import { authRoutes } from './modules/auth/auth.routes.js'
 
 export function buildApp() {
   const app = Fastify({
     logger: true,
+  })
+
+  app.register(authRoutes, {
+    prefix: '/auth',
   })
 
   app.get('/health', async () => {
