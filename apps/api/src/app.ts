@@ -1,3 +1,4 @@
+import cookie from '@fastify/cookie'
 import Fastify from 'fastify'
 
 import { pool } from './database/pool.js'
@@ -7,6 +8,8 @@ export function buildApp() {
   const app = Fastify({
     logger: true,
   })
+
+  app.register(cookie)
 
   app.register(authRoutes, {
     prefix: '/auth',

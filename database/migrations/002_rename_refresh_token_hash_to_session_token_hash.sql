@@ -1,0 +1,2 @@
+ALTER TABLE user_sessions
+RENAME COLUMN refresh_token_hash TO session_token_hash;

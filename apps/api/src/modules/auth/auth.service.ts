@@ -1,26 +1,24 @@
-import {
-  randomBytes,
-  scrypt,
-  timingSafeEqual,
-} from 'node:crypto'
-
-import { pool } from '../../database/pool.js'
+import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { pool } from "../../database/pool.js";
 import {
   createPasswordCredential,
   createUser,
+  createUserSession,
+  findUserBySessionTokenHash,
   findUserCredentialByEmail,
-} from './auth.repository.js'
+  revokeUserSession,
+} from "./auth.repository.js";
 
-import type {
-  LoginBody,
-  RegisterBody,
-} from './auth.schema.js'
+import type { LoginBody, RegisterBody } from "./auth.schema.js";
 
-const SCRYPT_KEY_LENGTH = 64
-const SCRYPT_COST = 32768
-const SCRYPT_BLOCK_SIZE = 8
-const SCRYPT_PARALLELIZATION = 3
-const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024
+const SCRYPT_KEY_LENGTH = 64;
+const SCRYPT_COST = 32768;
+const SCRYPT_BLOCK_SIZE = 8;
+const SCRYPT_PARALLELIZATION = 3;
+const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
+
+const SESSION_TOKEN_BYTES = 32;
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export class EmailAlreadyInUseError extends Error {}
 
@@ -47,38 +45,32 @@ function deriveKey(
       },
       (error, derivedKey) => {
         if (error) {
-          reject(error)
-          return
+          reject(error);
+          return;
         }
 
-        resolve(derivedKey)
+        resolve(derivedKey);
       },
-    )
-  })
+    );
+  });
 }
 
 async function hashPassword(password: string) {
-  const salt = randomBytes(16)
+  const salt = randomBytes(16);
 
-  const derivedKey = await deriveKey(
-    password,
-    salt,
-  )
+  const derivedKey = await deriveKey(password, salt);
 
   return [
-    'scrypt',
+    "scrypt",
     SCRYPT_COST,
     SCRYPT_BLOCK_SIZE,
     SCRYPT_PARALLELIZATION,
-    salt.toString('base64'),
-    derivedKey.toString('base64'),
-  ].join('$')
+    salt.toString("base64"),
+    derivedKey.toString("base64"),
+  ].join("$");
 }
 
-async function verifyPassword(
-  password: string,
-  storedHash: string,
-) {
+async function verifyPassword(password: string, storedHash: string) {
   const [
     algorithm,
     costValue,
@@ -86,48 +78,37 @@ async function verifyPassword(
     parallelizationValue,
     saltValue,
     hashValue,
-  ] = storedHash.split('$')
+  ] = storedHash.split("$");
 
   if (
-    algorithm !== 'scrypt' ||
+    algorithm !== "scrypt" ||
     !costValue ||
     !blockSizeValue ||
     !parallelizationValue ||
     !saltValue ||
     !hashValue
   ) {
-    return false
+    return false;
   }
 
-  const cost = Number(costValue)
-  const blockSize = Number(blockSizeValue)
-  const parallelization = Number(
-    parallelizationValue,
-  )
+  const cost = Number(costValue);
+  const blockSize = Number(blockSizeValue);
+  const parallelization = Number(parallelizationValue);
 
   if (
     !Number.isInteger(cost) ||
     !Number.isInteger(blockSize) ||
     !Number.isInteger(parallelization)
   ) {
-    return false
+    return false;
   }
 
-  const salt = Buffer.from(
-    saltValue,
-    'base64',
-  )
+  const salt = Buffer.from(saltValue, "base64");
 
-  const expectedHash = Buffer.from(
-    hashValue,
-    'base64',
-  )
+  const expectedHash = Buffer.from(hashValue, "base64");
 
-  if (
-    salt.length === 0 ||
-    expectedHash.length === 0
-  ) {
-    return false
+  if (salt.length === 0 || expectedHash.length === 0) {
+    return false;
   }
 
   const derivedKey = await deriveKey(
@@ -137,92 +118,113 @@ async function verifyPassword(
     cost,
     blockSize,
     parallelization,
-  )
+  );
 
-  return timingSafeEqual(
-    derivedKey,
-    expectedHash,
-  )
+  return timingSafeEqual(derivedKey, expectedHash);
 }
 
 function isUniqueViolation(error: unknown) {
   return (
-    typeof error === 'object' &&
+    typeof error === "object" &&
     error !== null &&
-    'code' in error &&
-    error.code === '23505'
-  )
+    "code" in error &&
+    error.code === "23505"
+  );
 }
 
-export async function registerUser(
-  input: RegisterBody,
-) {
-  const passwordHash = await hashPassword(
-    input.password,
-  )
+function generateSessionToken() {
+  return randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
+}
 
-  const client = await pool.connect()
+function hashSessionToken(sessionToken: string) {
+  return createHash("sha256").update(sessionToken).digest("hex");
+}
+
+export async function registerUser(input: RegisterBody) {
+  const passwordHash = await hashPassword(input.password);
+
+  const client = await pool.connect();
 
   try {
-    await client.query('BEGIN')
+    await client.query("BEGIN");
 
     const user = await createUser(client, {
       name: input.name,
       email: input.email,
-    })
+    });
 
-    await createPasswordCredential(
-      client,
-      user.id,
-      passwordHash,
-    )
+    await createPasswordCredential(client, user.id, passwordHash);
 
-    await client.query('COMMIT')
+    await client.query("COMMIT");
 
-    return user
+    return user;
   } catch (error) {
-    await client.query('ROLLBACK')
+    await client.query("ROLLBACK");
 
     if (isUniqueViolation(error)) {
-      throw new EmailAlreadyInUseError()
+      throw new EmailAlreadyInUseError();
     }
 
-    throw error
+    throw error;
   } finally {
-    client.release()
+    client.release();
   }
 }
 
-export async function loginUser(
-  input: LoginBody,
-) {
-  const credential =
-    await findUserCredentialByEmail(
-      input.email,
-    )
+export async function loginUser(input: LoginBody, userAgent?: string | null) {
+  const credential = await findUserCredentialByEmail(input.email);
 
   if (!credential) {
-    throw new InvalidCredentialsError()
+    throw new InvalidCredentialsError();
   }
 
-  if (credential.status !== 'ACTIVE') {
-    throw new InvalidCredentialsError()
+  if (credential.status !== "ACTIVE") {
+    throw new InvalidCredentialsError();
   }
 
-  const passwordMatches =
-    await verifyPassword(
-      input.password,
-      credential.secret_hash,
-    )
+  const passwordMatches = await verifyPassword(
+    input.password,
+    credential.secret_hash,
+  );
 
   if (!passwordMatches) {
-    throw new InvalidCredentialsError()
+    throw new InvalidCredentialsError();
   }
 
+  const sessionToken = generateSessionToken();
+
+  const sessionTokenHash = hashSessionToken(sessionToken);
+
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+
+  await createUserSession({
+    userId: credential.id,
+    sessionTokenHash,
+    expiresAt,
+    userAgent,
+  });
+
   return {
-    id: credential.id,
-    account_display_name:
-      credential.account_display_name,
-    email: credential.email,
-  }
+    user: {
+      id: credential.id,
+      account_display_name: credential.account_display_name,
+      email: credential.email,
+    },
+    session: {
+      token: sessionToken,
+      expiresAt,
+    },
+  };
+}
+
+export async function getUserFromSessionToken(sessionToken: string) {
+  const sessionTokenHash = hashSessionToken(sessionToken);
+
+  return findUserBySessionTokenHash(sessionTokenHash);
+}
+
+export async function logoutUser(sessionToken: string) {
+  const sessionTokenHash = hashSessionToken(sessionToken);
+
+  await revokeUserSession(sessionTokenHash);
 }
